@@ -1,8 +1,9 @@
 # bitlbee_status_notice.pl
-# Adds detailed information about status changed to bitlbee query windows
-# Information about known offline, online, and away durations will be printed
-# to open query windows of buddies. Away messages will also be asked for when
-# using the Oscar network.
+# Adds detailed information about status changed to bitlbee query windows and
+# the bitlbee control channel. Information about known offline, online, and
+# away durations will be printed to open query windows of buddies. Away
+# messages will also be asked for when using the Oscar network (but this seems
+# to be broken).
 
 # To use:
 # Set the correct values for $bitlbee_* below, and then:
@@ -15,12 +16,13 @@
 #   /set bitlbee_hide_quits ON|OFF
 #       Same for buddies signing off, except it also applies to query windows,
 #       because Irssi shows quit notices in query windows automatically.
-#   /set bitlbee_hide_modes ON|OFF
-#       Ignores mode changes (voicing/devoicing for away status)
 #
 # As of version 1.4, these settings default to OFF.
-# If you wish also to ignore mode changes (voicing/devoicing):
-#   /ignore &bitlbee MODES
+
+# Good, less spammy config:
+#   /ignore &bitlbee MODES QUITS
+# Cannot ignore JOINS, as that breaks time displays.
+
 use strict;
 use Irssi;
 use Time::Duration;
@@ -30,13 +32,13 @@ use vars qw($VERSION %IRSSI);
 
 $VERSION = '1.4';
 %IRSSI = (
-  authors     => 'Matt "f0rked" Sparks',
-  contact     => 'ms+irssi@quadpoint.org',
+  authors     => 'Matt "f0rked" Sparks, Kenyon Ralph',
+  contact     => 'ms+irssi@quadpoint.org, kenyon@kenyonralph.com',
   name        => 'bitlbee_status_notice',
-  description => 'Adds detailed information about status changes to bitlbee query windows',
-  license     => 'GPLv2',
-  url         => 'http://quadpoint.org',
-  changed     => '2005-12-05',
+  description => 'Adds detailed information about status changes.',
+  license     => 'GPLv3',
+  url         => 'http://quadpoint.org/',
+  changed     => '2009-05-25',
 );
 
 my $bitlbee_channel = "&bitlbee";
@@ -86,6 +88,7 @@ sub get_channel
 sub event_join
 {
   my($server, $channel, $nick, $address) = @_;
+
   if ($channel eq $bitlbee_channel && $server->{tag} eq $bitlbee_server_tag) {
     my $off_time;
     $off_time = time - $offline_times{$nick} if $offline_times{$nick};
@@ -96,9 +99,9 @@ sub event_join
     $online_times{$nick} = time;
 
     my $window = $server->query_find($nick);
-    if ($window) {
-      $window->printformat(MSGLEVEL_JOINS, "join", $nick, $address, $str);
-    }
+    $window->printformat(MSGLEVEL_JOINS, "join", $nick, $address, $str) if $window;
+    my $bitlbee_window = $server->channel_find($bitlbee_channel);
+    $bitlbee_window->printformat(MSGLEVEL_JOINS, "join", $nick, $address, $str) if $bitlbee_window;
 
     Irssi::signal_stop()  # don't print the join announcement in &bitlbee
       if Irssi::settings_get_bool("bitlbee_hide_joins");
@@ -109,6 +112,7 @@ sub event_join
 sub event_quit
 {
   my($server, $nick, $address, $reason) = @_;
+
   if ($server->{tag} eq $bitlbee_server_tag) {
     my $on_time;
     $on_time = time - $online_times{$nick} if $online_times{$nick};
@@ -119,9 +123,9 @@ sub event_quit
     $offline_times{$nick} = time;
 
     my $window = $server->query_find($nick);
-    if ($window) {
-      $window->printformat(MSGLEVEL_QUITS, "quit", $nick, $address, $str);
-    }
+    $window->printformat(MSGLEVEL_QUITS, "quit", $nick, $address, $str) if $window;
+    my $bitlbee_window = $server->channel_find($bitlbee_channel);
+    $bitlbee_window->printformat(MSGLEVEL_QUITS, "quit", $nick, $address, $str) if $bitlbee_window;
 
     Irssi::signal_stop()  # don't print the quit announcement anywhere
       if Irssi::settings_get_bool("bitlbee_hide_quits");
@@ -132,10 +136,13 @@ sub event_quit
 sub event_mode
 {
   my($channel, $nick, $setby, $mode, $type) = @_;
+
   #print Dumper $nick;
   #print Dumper $channel;
+
   if ($mode eq "+" && $channel->{name} eq $bitlbee_channel &&
       $channel->{server}->{tag} eq $bitlbee_server_tag) {
+
     my $window = $channel->{server}->query_find($nick->{nick});
     my $gone_time;
 
@@ -148,22 +155,23 @@ sub event_mode
       }
     }
 
-    if ($window) {
-      if ($type eq "+") {
-        my $gone_str;
-        $gone_str = " (gone: ".duration($gone_time).")" if $gone_time;
-        $window->printformat(MSGLEVEL_MODES, "state_back", $nick->{nick},
-                             $nick->{host}, $gone_str)
-          if (time-$online_times{$nick->{nick}} > 2);
-      } elsif ($type eq "-") {
-        $window->printformat(MSGLEVEL_MODES, "state_away", $nick->{nick},
-                             $nick->{host});
-        if ($nick->{host} =~ /login\.oscar\.aol\.com$/) {
-          $away_watch{nick} = $nick->{nick};
-          $channel->{server}->send_message($channel->{name},
-                                           "info $nick->{nick}", 0);
-          $requested_info = 1;
-        }
+    if ($type eq "+") {
+      my $gone_str;
+      $gone_str = " (gone: ".duration($gone_time).")" if $gone_time;
+
+      if (time - $online_times{$nick->{nick}} > 2) {
+        $window->printformat(MSGLEVEL_MODES, "state_back", $nick->{nick}, $nick->{host}, $gone_str) if $window;
+        $channel->printformat(MSGLEVEL_MODES, "state_back", $nick->{nick}, $nick->{host}, $gone_str) if $channel;
+      }
+
+    } elsif ($type eq "-") {
+      $window->printformat(MSGLEVEL_MODES, "state_away", $nick->{nick}, $nick->{host}) if $window;
+      $channel->printformat(MSGLEVEL_MODES, "state_away", $nick->{nick}, $nick->{host}) if $channel;
+
+      if ($nick->{host} =~ /login\.messaging\.aol\.com$/) {
+        $away_watch{nick} = $nick->{nick};
+        $channel->{server}->send_message($channel->{name}, "info $nick->{nick}", 0);
+        $requested_info = 1;
       }
     }
   }
@@ -173,26 +181,25 @@ sub event_mode
 sub pub_msg
 {
   my($server, $msg, $nick, $address, $target) = @_;
+
   #print "$msg $nick $address $target";
-  if ($nick eq "root" && $server->{tag} eq $bitlbee_server_tag &&
-      $target eq $bitlbee_channel) {
+
+  if ($nick eq "root" && $server->{tag} eq $bitlbee_server_tag && $target eq $bitlbee_channel) {
     my $window = $server->channel_find($target);
     if ($window) {
       my $qwin;
       $qwin = $server->query_find($away_watch{nick}) if $away_watch{nick};
-      if ($msg =~ /^TOC\(?.*\)? \- Away Message/g ||
-          $msg =~ /^oscar \- Away Message/) {
+      if ($msg =~ /^TOC\(?.*\)? \- Away Message/g || $msg =~ /^oscar \- Away Message/) {
         $away_watch{watch} = 1;
         $hide_it = 1 if $requested_info;
-        Irssi::timeout_add_once(400,
-                                sub { $hide_it = 0; $requested_info = 0; },
-                                "");
+        Irssi::timeout_add_once(400, sub { $hide_it = 0; $requested_info = 0; }, "");
         #$qwin->print("Away message:",MSGLEVEL_CRAP) if $qwin;
       } elsif ($msg =~ /^TOC\(?.*\)? \- .+$/ || $msg =~ /^oscar \- .+$/) {
         delete $away_watch{watch};
         delete $away_watch{nick};
       } elsif ($away_watch{watch} && $qwin) {
         $qwin->printformat(MSGLEVEL_CRAP, "away_msg", $msg) if $qwin;
+        $window->printformat(MSGLEVEL_CRAP, "away_msg", $msg) if $window;
       }
     }
 
